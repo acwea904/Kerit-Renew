@@ -15,18 +15,91 @@ jobs:
         with:
           python-version: '3.10'
           
-      - name: 🛡️ 启动 Xray 代理转发 (VLESS)
+      - name: 🛡️ 解析 VLESS 链接并启动 Xray 代理
         env:
-          VLESS_CONFIG: ${{ secrets.VLESS_CONFIG }}
+          VLESS_LINK: ${{ secrets.VLESS_LINK }}
         run: |
+          # 1. 下载最新的 Xray-core
           wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
           unzip Xray-linux-64.zip -d xray
           chmod +x xray/xray
-          echo "$VLESS_CONFIG" > xray/config.json
+          
+          # 2. 运行 Python 脚本安全地将链接转换为 config.json
+          python -c "
+          import os, json, urllib.parse
+          link = os.environ.get('VLESS_LINK', '').strip()
+          if not link.startswith('vless://'):
+              print('❌ 错误: 未获取到有效的 vless:// 链接，请检查 Secret 设置')
+              exit(1)
+          
+          link = link[8:]
+          auth_host, rest = link.split('?', 1) if '?' in link else (link, '')
+          uuid, host_port = auth_host.split('@', 1)
+          address, port = host_port.split(':', 1) if ':' in host_port else (host_port, 443)
+          
+          query_string = rest.split('#', 1)[0]
+          params = dict(urllib.parse.parse_qsl(query_string))
+          
+          config = {
+              'log': {'loglevel': 'warning'},
+              'inbounds': [{'port': 8080, 'listen': '127.0.0.1', 'protocol': 'http'}],
+              'outbounds': [{
+                  'protocol': 'vless',
+                  'settings': {
+                      'vnext': [{
+                          'address': address,
+                          'port': int(port),
+                          'users': [{'id': uuid, 'encryption': params.get('encryption', 'none')}]
+                      }]
+                  },
+                  'streamSettings': {
+                      'network': params.get('type', 'tcp'),
+                      'security': params.get('security', 'none')
+                  }
+              }]
+          }
+          
+          if params.get('flow'):
+              config['outbounds'][0]['settings']['vnext'][0]['users'][0]['flow'] = params['flow']
+              
+          net = params.get('type', 'tcp')
+          if net == 'ws':
+              config['outbounds'][0]['streamSettings']['wsSettings'] = {
+                  'path': params.get('path', '/'),
+                  'headers': {'Host': params.get('host', params.get('sni', ''))}
+              }
+          elif net == 'grpc':
+              config['outbounds'][0]['streamSettings']['grpcSettings'] = {
+                  'serviceName': params.get('serviceName', ''),
+                  'multiMode': params.get('mode', 'multi') == 'multi'
+              }
+              
+          sec = params.get('security', 'none')
+          if sec == 'tls':
+              config['outbounds'][0]['streamSettings']['tlsSettings'] = {
+                  'serverName': params.get('sni', address),
+                  'fingerprint': params.get('fp', 'chrome')
+              }
+          elif sec == 'reality':
+              config['outbounds'][0]['streamSettings']['realitySettings'] = {
+                  'serverName': params.get('sni', address),
+                  'fingerprint': params.get('fp', 'chrome'),
+                  'publicKey': params.get('pbk', ''),
+                  'shortId': params.get('sid', ''),
+                  'spiderX': params.get('spx', '')
+              }
+              
+          with open('xray/config.json', 'w') as f:
+              json.dump(config, f, indent=2)
+          print('✅ VLESS 链接已成功解析为 Xray 配置')
+          "
+          
+          # 3. 启动 Xray 并测试
           echo "启动 Xray 转发隧道..."
           nohup ./xray/xray run -c xray/config.json > xray.log 2>&1 &
           sleep 3
-          echo "测试本地代理连通性..."
+          
+          echo "测试本地代理连通性 (若卡住说明节点不通)..."
           curl -x http://127.0.0.1:8080 https://api.ipify.org -v
           
       - name: 🛠️ 安装系统依赖
