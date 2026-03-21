@@ -2,106 +2,28 @@ name: Kerit-Renew
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 1 */5 * *'
+    - cron: '0 1 */6 * *'
 jobs:
   run_kerit_login:
     runs-on: ubuntu-latest
     steps:
       - name: 📥 下载公库代码
         uses: actions/checkout@v4
-        
       - name: 🐍 设置 Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          
-      - name: 🛡️ 解析 VLESS 链接并启动 Xray 代理
-        env:
-          VLESS_LINK: ${{ secrets.VLESS_LINK }}
+      - name: 🛡️ 启动 Gost 代理转发
         run: |
-          # 1. 下载最新的 Xray-core
-          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip Xray-linux-64.zip -d xray
-          chmod +x xray/xray
-          
-          # 2. 运行 Python 脚本安全地将链接转换为 config.json
-          python -c "
-          import os, json, urllib.parse
-          link = os.environ.get('VLESS_LINK', '').strip()
-          if not link.startswith('vless://'):
-              print('❌ 错误: 未获取到有效的 vless:// 链接，请检查 Secret 设置')
-              exit(1)
-          
-          link = link[8:]
-          auth_host, rest = link.split('?', 1) if '?' in link else (link, '')
-          uuid, host_port = auth_host.split('@', 1)
-          address, port = host_port.split(':', 1) if ':' in host_port else (host_port, 443)
-          
-          query_string = rest.split('#', 1)[0]
-          params = dict(urllib.parse.parse_qsl(query_string))
-          
-          config = {
-              'log': {'loglevel': 'warning'},
-              'inbounds': [{'port': 8080, 'listen': '127.0.0.1', 'protocol': 'http'}],
-              'outbounds': [{
-                  'protocol': 'vless',
-                  'settings': {
-                      'vnext': [{
-                          'address': address,
-                          'port': int(port),
-                          'users': [{'id': uuid, 'encryption': params.get('encryption', 'none')}]
-                      }]
-                  },
-                  'streamSettings': {
-                      'network': params.get('type', 'tcp'),
-                      'security': params.get('security', 'none')
-                  }
-              }]
-          }
-          
-          if params.get('flow'):
-              config['outbounds'][0]['settings']['vnext'][0]['users'][0]['flow'] = params['flow']
-              
-          net = params.get('type', 'tcp')
-          if net == 'ws':
-              config['outbounds'][0]['streamSettings']['wsSettings'] = {
-                  'path': params.get('path', '/'),
-                  'headers': {'Host': params.get('host', params.get('sni', ''))}
-              }
-          elif net == 'grpc':
-              config['outbounds'][0]['streamSettings']['grpcSettings'] = {
-                  'serviceName': params.get('serviceName', ''),
-                  'multiMode': params.get('mode', 'multi') == 'multi'
-              }
-              
-          sec = params.get('security', 'none')
-          if sec == 'tls':
-              config['outbounds'][0]['streamSettings']['tlsSettings'] = {
-                  'serverName': params.get('sni', address),
-                  'fingerprint': params.get('fp', 'chrome')
-              }
-          elif sec == 'reality':
-              config['outbounds'][0]['streamSettings']['realitySettings'] = {
-                  'serverName': params.get('sni', address),
-                  'fingerprint': params.get('fp', 'chrome'),
-                  'publicKey': params.get('pbk', ''),
-                  'shortId': params.get('sid', ''),
-                  'spiderX': params.get('spx', '')
-              }
-              
-          with open('xray/config.json', 'w') as f:
-              json.dump(config, f, indent=2)
-          print('✅ VLESS 链接已成功解析为 Xray 配置')
-          "
-          
-          # 3. 启动 Xray 并测试
-          echo "启动 Xray 转发隧道..."
-          nohup ./xray/xray run -c xray/config.json > xray.log 2>&1 &
+          wget https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
+          gunzip gost-linux-amd64-2.11.5.gz
+          chmod +x gost-linux-amd64-2.11.5
+          mv gost-linux-amd64-2.11.5 gost
+          echo "启动 Gost 转发隧道..."
+          nohup ./gost -L http://:8080 -F ${{ secrets.GOST_PROXY }} > gost.log 2>&1 &
           sleep 3
-          
-          echo "测试本地代理连通性 (若卡住说明节点不通)..."
+          echo "测试本地代理连通性..."
           curl -x http://127.0.0.1:8080 https://api.ipify.org -v
-          
       - name: 🛠️ 安装系统依赖
         run: |
           sudo apt-get update
@@ -111,32 +33,21 @@ jobs:
             x11-utils \
             xdotool \
             scrot
-            
       - name: 🐍 安装 Python 依赖
         run: |
           pip install seleniumbase
           seleniumbase install uc_driver
-          
       - name: 🚀 运行脚本
         env:
           PYTHONIOENCODING: utf-8
           KERIT_ACCOUNT: ${{ secrets.KERIT_ACCOUNT }}
+          GOST_PROXY: ${{ secrets.GOST_PROXY }}
           TG_BOT: ${{ secrets.TG_BOT }}
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python kerit_renew.py
-          
       - name: 📸 上传截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
           path: "*.png"
-
-      - name: 🗑️ 清理旧的工作流记录
-        if: always()
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          retain_days: 2
-          keep_minimum_runs: 2
