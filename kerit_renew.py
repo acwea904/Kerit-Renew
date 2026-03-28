@@ -40,7 +40,7 @@ def now_str():
     import datetime
     return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-def send_tg(result, server_id=None, remaining=None):
+def send_tg(result, server_id=None, remaining=None, photo_path=None):
     lines = [
         f"🎮 Kerit 服务器续期通知",
         f"🕐 运行时间: {now_str()}",
@@ -51,20 +51,51 @@ def send_tg(result, server_id=None, remaining=None):
     if remaining is not None:
         lines.append(f"⏱️ 剩余天数: {remaining}天")
     msg = "\n".join(lines)
+    
     if not TG_TOKEN or not TG_CHAT_ID:
         print("⚠️ TG未配置，跳过推送")
         return
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({
-        "chat_id": TG_CHAT_ID,
-        "text": msg,
-    }).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            print(f"📨 TG推送成功")
-    except Exception as e:
-        print(f"⚠️ TG推送失败：{e}")
+        
+    # 如果有截图并且文件存在，则发送图文消息
+    if photo_path and os.path.exists(photo_path):
+        import uuid
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendPhoto"
+        boundary = uuid.uuid4().hex
+        headers = {'Content-Type': f'multipart/form-data; boundary={boundary}'}
+        body = []
+        
+        # 写入 chat_id
+        body.append(f'--{boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{TG_CHAT_ID}\r\n'.encode('utf-8'))
+        # 写入 caption (文字信息)
+        body.append(f'--{boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n{msg}\r\n'.encode('utf-8'))
+        
+        # 写入照片
+        filename = os.path.basename(photo_path)
+        body.append(f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="{filename}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode('utf-8'))
+        with open(photo_path, 'rb') as f:
+            body.append(f.read())
+        body.append(f'\r\n--{boundary}--\r\n'.encode('utf-8'))
+        
+        data = b"".join(body)
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                print(f"📨 TG带图推送成功")
+        except Exception as e:
+            print(f"⚠️ TG带图推送失败：{e}")
+    else:
+        # 如果没有截图，则发送纯文本消息
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        data = urllib.parse.urlencode({
+            "chat_id": TG_CHAT_ID,
+            "text": msg,
+        }).encode()
+        try:
+            req = urllib.request.Request(url, data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                print(f"📨 TG文本推送成功")
+        except Exception as e:
+            print(f"⚠️ TG文本推送失败：{e}")
 
 
 # ============================================================
@@ -392,7 +423,7 @@ def do_renew(sb):
     if not server_id:
         print("❌ serverData.id缺失")
         sb.save_screenshot("no_server_id.png")
-        send_tg("❌ serverData.id缺失，续期失败")
+        send_tg("❌ serverData.id缺失，续期失败", photo_path="no_server_id.png")
         return
     print(f"🆔 服务器ID: {server_id}")
 
@@ -409,14 +440,14 @@ def do_renew(sb):
     if initial_remaining >= 7:
         print("✅ 剩余天数已满7天，无需续期")
         sb.save_screenshot("renew_skip.png")
-        send_tg("✅ 无需续期（剩余天数已满）", server_id, initial_remaining)
+        send_tg("✅ 无需续期（剩余天数已满）", server_id, initial_remaining, photo_path="renew_skip.png")
         return
 
     if need <= 0:
         print("🎉 已达上限7/7，无需续期")
         sb.save_screenshot("renew_full.png")
         remaining = extract_remaining_days(sb)
-        send_tg("✅ 无需续期（已达上限 7/7）", server_id, remaining)
+        send_tg("✅ 无需续期（已达上限 7/7）", server_id, remaining, photo_path="renew_full.png")
         return
 
     for attempt in range(need):
@@ -432,7 +463,7 @@ def do_renew(sb):
             print("🎉 已达上限7/7，提前结束")
             sb.save_screenshot("renew_full.png")
             remaining = extract_remaining_days(sb)
-            send_tg("✅ 续期完成", server_id, remaining)
+            send_tg("✅ 续期完成", server_id, remaining, photo_path="renew_full.png")
             return
 
         print(f"🔁 第{attempt + 1}/{need}次续期...")
@@ -455,7 +486,7 @@ def do_renew(sb):
         if not renew_clicked:
             print("❌ 续期按钮缺失")
             sb.save_screenshot("no_renew_btn.png")
-            send_tg(f"❌ 续期按钮缺失，第{attempt + 1}次失败", server_id)
+            send_tg(f"❌ 续期按钮缺失，第{attempt + 1}次失败", server_id, photo_path="no_renew_btn.png")
             return
 
         time.sleep(2)
@@ -469,12 +500,12 @@ def do_renew(sb):
         else:
             print("❌ Turnstile未出现")
             sb.save_screenshot(f"no_turnstile_{attempt}.png")
-            send_tg(f"❌ Turnstile未出现，第{attempt + 1}次失败", server_id)
+            send_tg(f"❌ Turnstile未出现，第{attempt + 1}次失败", server_id, photo_path=f"no_turnstile_{attempt}.png")
             return
 
         if not solve_turnstile(sb):
             sb.save_screenshot(f"turnstile_fail_{attempt}.png")
-            send_tg(f"❌ Turnstile验证失败，第{attempt + 1}次", server_id)
+            send_tg(f"❌ Turnstile验证失败，第{attempt + 1}次", server_id, photo_path=f"turnstile_fail_{attempt}.png")
             return
 
         token = get_token_value(sb)
@@ -526,10 +557,10 @@ def do_renew(sb):
     print(f"📊 最终进度: {final_count}/7")
     if final_count >= 7:
         print("🎉 已达上限7/7")
-        send_tg("✅ 续期完成", server_id, final_remaining)
+        send_tg("✅ 续期完成", server_id, final_remaining, photo_path="renew_done.png")
     else:
         print(f"⚠️ 续期未达上限，当前{final_count}/7")
-        send_tg(f"⚠️ 续期未达上限（{final_count}/7）", server_id, final_remaining)
+        send_tg(f"⚠️ 续期未达上限（{final_count}/7）", server_id, final_remaining, photo_path="renew_done.png")
 
 
 # ============================================================
@@ -564,7 +595,7 @@ def run_script():
                 print("🛡️ 检测到Turnstile...")
                 if not solve_turnstile(sb):
                     sb.save_screenshot("kerit_cf_fail.png")
-                    send_tg("❌ 登录页Turnstile验证失败")
+                    send_tg("❌ 登录页Turnstile验证失败", photo_path="kerit_cf_fail.png")
                     return
                 time.sleep(2)
                 break
@@ -577,7 +608,7 @@ def run_script():
         except Exception:
             print("❌ 邮箱框加载失败")
             sb.save_screenshot("kerit_no_email_input.png")
-            send_tg("❌ 邮箱框加载失败")
+            send_tg("❌ 邮箱框加载失败", photo_path="kerit_no_email_input.png")
             return
 
         sb.type('#email-input', KERIT_EMAIL)
@@ -601,7 +632,7 @@ def run_script():
         if not clicked:
             print("❌ 继续按钮缺失")
             sb.save_screenshot("kerit_no_continue_btn.png")
-            send_tg("❌ 继续按钮缺失")
+            send_tg("❌ 继续按钮缺失", photo_path="kerit_no_continue_btn.png")
             return
 
         print("📨 等待OTP框...")
@@ -610,7 +641,7 @@ def run_script():
         except Exception:
             print("❌ OTP框加载失败")
             sb.save_screenshot("kerit_no_otp.png")
-            send_tg("❌ OTP框加载失败")
+            send_tg("❌ OTP框加载失败", photo_path="kerit_no_otp.png")
             return
 
         try:
@@ -618,7 +649,7 @@ def run_script():
         except TimeoutError as e:
             print(e)
             sb.save_screenshot("kerit_otp_timeout.png")
-            send_tg("❌ Gmail OTP获取超时")
+            send_tg("❌ Gmail OTP获取超时", photo_path="kerit_otp_timeout.png")
             return
 
         otp_inputs = sb.find_elements('.otp-input')
@@ -665,7 +696,7 @@ def run_script():
         if not verify_clicked:
             print("❌ 验证按钮缺失")
             sb.save_screenshot("kerit_no_verify_btn.png")
-            send_tg("❌ 验证按钮缺失")
+            send_tg("❌ 验证按钮缺失", photo_path="kerit_no_verify_btn.png")
             return
 
         print("⏳ 等待登录跳转...")
@@ -681,7 +712,7 @@ def run_script():
         else:
             print("❌ 登录等待超时")
             sb.save_screenshot("kerit_login_timeout.png")
-            send_tg("❌ 登录等待超时")
+            send_tg("❌ 登录等待超时", photo_path="kerit_login_timeout.png")
             return
 
         do_renew(sb)
